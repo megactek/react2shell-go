@@ -4,7 +4,7 @@ A high-performance Go implementation of the Next.js RSC (React Server Components
 
 ## Features
 
-- **High Concurrency**: Leverages Go's goroutines for parallel scanning (default: 1000 workers)
+- **High Concurrency**: Leverages Go's goroutines for parallel scanning (default: 100 workers, max: 500)
 - **Multiple Scan Modes**: Version detection, safe side-channel, RCE PoC, and comprehensive scanning
 - **WAF Bypass Techniques**: Junk data injection, Unicode encoding, and Vercel-specific bypasses
 - **Local Project Scanning**: Scan local Next.js projects for vulnerable versions
@@ -139,8 +139,8 @@ GOOS=windows GOARCH=amd64 go build -o scanner-windows-amd64.exe ./cmd/scanner
 # Custom timeout (seconds)
 ./scanner -u https://target.com --timeout 30
 
-# Custom worker count (default: 1000)
-./scanner -l targets.txt --workers 2000
+# Custom worker count (default: 100, max: 500)
+./scanner -l targets.txt --workers 200
 
 # Disable SSL verification (default: enabled)
 ./scanner -u https://target.com --k
@@ -203,7 +203,7 @@ react2shell-go/
 
 The Go implementation provides significant performance improvements:
 
-- **Default Concurrency**: 1000 workers (configurable)
+- **Default Concurrency**: 100 workers (configurable, max: 500)
 - **Connection Pooling**: Reuses HTTP connections efficiently
 - **Zero-copy Operations**: Minimizes memory allocations
 - **Context-based Cancellation**: Graceful timeout handling

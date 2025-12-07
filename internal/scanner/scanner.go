@@ -41,9 +41,9 @@ func NewScanner(httpClient client.HTTPClient, userAgent string) Scanner {
 
 func (s *nextJSScanner) getHeaders(contentType string) map[string]string {
 	headers := map[string]string{
-		"User-Agent":              s.userAgent,
-		"Next-Action":             "x",
-		"X-Nextjs-Request-Id":     fmt.Sprintf("scan-%d", rand.Intn(9000)+1000),
+		"User-Agent":               s.userAgent,
+		"Next-Action":              "x",
+		"X-Nextjs-Request-Id":      fmt.Sprintf("scan-%d", rand.Intn(9000)+1000),
 		"X-Nextjs-Html-Request-Id": "SSTMXm7OJ_g0Ncx6jpQt9",
 	}
 	if contentType != "" {
@@ -97,7 +97,7 @@ func (s *nextJSScanner) ScanVersion(ctx context.Context, url string) (*models.Sc
 		contentType := rscResp.Header.Get("Content-Type")
 		isRSC := strings.HasPrefix(contentType, "text/x-component")
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := utils.ReadAllWithTimeout(resp.Body, 5*time.Second, 2*1024*1024)
 		bodyText := string(bodyBytes)
 
 		if result.Version == "" {
@@ -152,7 +152,7 @@ func (s *nextJSScanner) ScanSafe(ctx context.Context, url string) (*models.ScanR
 	defer resp.Body.Close()
 
 	result.StatusCode = resp.StatusCode
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := utils.ReadAllWithTimeout(resp.Body, 5*time.Second, 2*1024*1024)
 	bodyText := string(bodyBytes)
 	if len(bodyText) > 2000 {
 		result.RawResponse = bodyText[:2000]
@@ -381,7 +381,7 @@ func (s *nextJSScanner) ReadFile(ctx context.Context, url string, filepath strin
 		return true, matches[1], nil
 	}
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := utils.ReadAllWithTimeout(resp.Body, 10*time.Second, 2*1024*1024)
 	bodyText := string(bodyBytes)
 	bodyMatch := outputRe.FindStringSubmatch(bodyText)
 	if len(bodyMatch) > 1 {
@@ -394,4 +394,3 @@ func (s *nextJSScanner) ReadFile(ctx context.Context, url string, filepath strin
 
 	return false, fmt.Sprintf("File read failed (Status: %d)", resp.StatusCode), nil
 }
-

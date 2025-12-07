@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/react2shell/scanner/internal/client"
 	"github.com/react2shell/scanner/internal/local"
@@ -21,7 +22,8 @@ const (
 	version        = "1.1.0"
 	toolName       = "React2Shell Ultimate CVE-2025-66478 Scanner"
 	defaultUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	defaultWorkers = 1000
+	defaultWorkers = 100
+	maxWorkers     = 500
 )
 
 func main() {
@@ -47,7 +49,7 @@ func main() {
 		cmdFlag           = flag.String("cmd", "", "Command to execute in god mode (e.g., --cmd 'id')")
 		readFileFlag      = flag.String("read-file", "", "File to read from target in god mode (e.g., --read-file '/etc/passwd')")
 		shellFlag         = flag.Bool("shell", false, "Interactive shell on vulnerable target (god mode)")
-		workersFlag       = flag.Int("workers", defaultWorkers, "Number of concurrent workers (default: 1000)")
+		workersFlag       = flag.Int("workers", defaultWorkers, "Number of concurrent workers (default: 100, max: 500)")
 		timeoutFlag       = flag.Int("timeout", 10, "Request timeout in seconds (default: 10)")
 		insecureFlag      = flag.Bool("k", true, "Disable SSL verification (default: enabled)")
 		proxyFlag         = flag.String("proxy", "", "Proxy URL (http://host:port)")
@@ -267,8 +269,22 @@ func handleRemoteScan(hosts []string, scanMode models.ScanMode, opts *models.Sca
 	var results []*models.ScanResult
 	var vulnerableCount, errorCount int
 
+	if workers > maxWorkers {
+		workers = maxWorkers
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var formatter output.Formatter
+	if jsonOutput {
+		formatter = output.NewJSONFormatter()
+	} else {
+		formatter = output.NewConsoleFormatter(verbose, !noColor)
+	}
+
 	if len(hosts) == 1 {
-		result, err := scanSingleHost(context.Background(), scnr, hosts[0], scanMode, opts)
+		result, err := scanSingleHost(ctx, scnr, hosts[0], scanMode, opts)
 		if err != nil {
 			result = &models.ScanResult{
 				URL:   hosts[0],
@@ -281,48 +297,74 @@ func handleRemoteScan(hosts []string, scanMode models.ScanMode, opts *models.Sca
 		if result.Vulnerable != nil && *result.Vulnerable {
 			vulnerableCount++
 		}
+
+		if !quiet || (result.Vulnerable != nil && *result.Vulnerable) {
+			formatter.Format(result, os.Stdout)
+		}
 	} else {
 		pool := scanner.NewWorkerPool(scnr, workers)
-		pool.Start()
 		defer pool.Close()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
+		jobChan := make(chan scanner.Job)
 		go func() {
+			defer close(jobChan)
 			for _, host := range hosts {
-				job := scanner.Job{
+				select {
+				case jobChan <- scanner.Job{
 					URL:     host,
 					Options: opts,
 					Mode:    scanMode,
-				}
-				if err := pool.Submit(job); err != nil {
-					break
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
 
+		resultChan := pool.ProcessJobs(ctx, jobChan)
 		results = make([]*models.ScanResult, 0, len(hosts))
-		resultChan := pool.Results()
+		processedCount := 0
+		timeout := time.Duration(opts.Timeout+10) * time.Second
+		readTimeout := time.NewTimer(timeout)
+		defer readTimeout.Stop()
 
-		for i := 0; i < len(hosts); i++ {
+		for processedCount < len(hosts) {
 			select {
 			case result, ok := <-resultChan:
 				if !ok {
 					goto done
 				}
+				processedCount++
+
+				if !readTimeout.Stop() {
+					<-readTimeout.C
+				}
+				readTimeout.Reset(timeout)
+
 				if result.Error != nil {
 					errorCount++
-					results = append(results, &models.ScanResult{
-						URL:   hosts[i],
+					errResult := &models.ScanResult{
+						URL:   result.ScanResult.URL,
 						Error: result.Error.Error(),
-					})
-				} else {
+					}
+					results = append(results, errResult)
+					if !quiet {
+						formatter.Format(errResult, os.Stdout)
+					}
+				} else if result.ScanResult != nil {
 					results = append(results, result.ScanResult)
 					if result.ScanResult.Vulnerable != nil && *result.ScanResult.Vulnerable {
 						vulnerableCount++
 					}
+					if !quiet || (result.ScanResult.Vulnerable != nil && *result.ScanResult.Vulnerable) {
+						formatter.Format(result.ScanResult, os.Stdout)
+					}
 				}
+			case <-readTimeout.C:
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "[!] Timeout waiting for results, processed %d/%d\n", processedCount, len(hosts))
+				}
+				goto done
 			case <-ctx.Done():
 				goto done
 			}
@@ -330,17 +372,9 @@ func handleRemoteScan(hosts []string, scanMode models.ScanMode, opts *models.Sca
 	done:
 	}
 
-	var formatter output.Formatter
-	if jsonOutput {
-		formatter = output.NewJSONFormatter()
-		formatter.FormatBatch(results, os.Stdout)
-	} else {
-		formatter = output.NewConsoleFormatter(verbose, !noColor)
-		for _, result := range results {
-			if !quiet || (result.Vulnerable != nil && *result.Vulnerable) {
-				formatter.Format(result, os.Stdout)
-			}
-		}
+	if jsonOutput && len(hosts) > 1 {
+		jsonFormatter := output.NewJSONFormatter()
+		jsonFormatter.FormatBatch(results, os.Stdout)
 	}
 
 	if !quiet && !jsonOutput {
